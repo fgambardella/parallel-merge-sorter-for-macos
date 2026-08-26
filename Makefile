@@ -39,27 +39,21 @@ $(BINARY): $(OBJ)
 # then the fault-injection tests, then the large-file performance
 # test, then the memory leak check.
 test: build fixtures
-	@echo "------------------------------"
-	@echo "| Running test suite ...     |"
-	@echo "------------------------------"
+	@printf '\n\033[1m Fixture tests\033[0m\n'
 	@zsh $(TESTS)/run_tests.zsh
-	@echo "----------------------------------------------"
-	@echo "| Running fault-injection tests ...          |"
-	@echo "----------------------------------------------"
-	@$(MAKE) -C $(TESTS)/exploration run
-	@$(MAKE) -C $(TESTS)/preservation run
-	@echo "-----------------------------------"
-	@echo "| Running performance test ...    |"
-	@echo "-----------------------------------"
+	@printf '\n\033[1m Fault injection :: exploration\033[0m\n'
+	@$(MAKE) --no-print-directory -C $(TESTS)/exploration run
+	@printf '\n\033[1m Fault injection :: preservation\033[0m\n'
+	@$(MAKE) --no-print-directory -C $(TESTS)/preservation run
+	@printf '\n\033[1m Performance\033[0m\n'
 	@zsh $(TESTS)/run_perf_test.zsh
-	@echo "---------------------------------"
-	@echo "| Running memory leak check ... |"
-	@echo "---------------------------------"
+	@printf '\n\033[1m Sanitizers + leak check\033[0m\n'
 	@zsh $(TESTS)/check_leaks.zsh
+	@printf '\n\033[32;1m All test suites passed.\033[0m\n\n'
 
 # (Re)generate all test fixtures and their expected outputs.
 fixtures:
-	zsh $(TESTS)/generate_fixtures.zsh
+	@zsh $(TESTS)/generate_fixtures.zsh > /dev/null
 
 clean:
 	rm -f $(BINARY) $(OBJ) $(DEP)

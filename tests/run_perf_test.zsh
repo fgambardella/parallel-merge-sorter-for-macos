@@ -3,8 +3,7 @@
 # run_perf_test.zsh - Performance test for the sorter on a large file
 #
 # Runs the sorter on a significative input (tests/data/random-words.txt,
-# 2643 real words) in an isolated sandbox, in both directions (asc and
-# desc), and for each run:
+# 2643 real words) in both directions (asc and desc), and for each run:
 #   1. checks the exit code (must be 0),
 #   2. checks the generated output file name,
 #   3. compares the generated output byte-for-byte with an expected
@@ -28,14 +27,19 @@ MAX_LENGTH=256   # must match MAX_LENGTH in main.c
 # Deterministic text processing regardless of the user's locale.
 export LC_ALL=C
 
+# ---- color support (disabled if not a terminal) ----------------------
+if [[ -t 1 ]]; then
+  c_green=$'\033[32m'; c_red=$'\033[31m'; c_dim=$'\033[2m'; c_reset=$'\033[0m'
+else
+  c_green=; c_red=; c_dim=; c_reset=
+fi
+
 # L-04 fix: canonicalize the input path BEFORE cd.
 PERF_INPUT="${PERF_INPUT:-${SCRIPT_DIR}/data/random-words.txt}"
 PERF_INPUT="${PERF_INPUT:A}"
 
 pass=0; fail=0
-runs_pass=0; runs_fail=0
-ok()  { pass=$((pass + 1)); print "      ✓ $1"; }
-bad() { fail=$((fail + 1));  print "      ✗ $1"; }
+typeset -a failure_details=()
 
 # ---- preconditions ---------------------------------------------------
 if [[ ! -x $BINARY ]]; then
@@ -55,11 +59,7 @@ cp "$PERF_INPUT" "$SANDBOX/perf_input.txt"
 cd "$SANDBOX"
 input="perf_input.txt"
 
-# Derive the output file name the same way the sorter does
-# (build_output_path in io.c): insert "_ordered_<dir>" right before
-# the last extension in the basename; a missing dot (or a leading dot)
-# means the suffix is appended to the whole name.
-derive_out() {  # $1 = asc|desc  ->  prints the expected output name
+derive_out() {
   local base="$input"
   if [[ $base == *.* && $base != .* ]]; then
     print -r -- "${base%.*}_ordered_$1.${base##*.}"
@@ -71,11 +71,10 @@ derive_out() {  # $1 = asc|desc  ->  prints the expected output name
 n_lines=$(wc -l < "$PERF_INPUT" | tr -d ' ')
 n_bytes=$(wc -c < "$PERF_INPUT" | tr -d ' ')
 
-print "== perf: large-file performance test =="
-print "   input: $input ($n_lines lines, $n_bytes bytes)"
+print "  ${c_dim}${PERF_INPUT:t}: $n_lines lines, $n_bytes bytes${c_reset}"
 
 # Build expected output for a given direction.
-make_expected() {  # $1 = asc|desc
+make_expected() {
   local dir=$1 flag=()
   [[ $dir == desc ]] && flag+=(-r)
   awk -v max="$MAX_LENGTH" \
@@ -86,10 +85,8 @@ make_expected asc
 make_expected desc
 
 # ---- one run --------------------------------------------------------------
-run_one() {  # $1 = order (asc|desc)
+run_one() {
   local order=$1
-
-  # M-08 fix: force LOG_LEVEL=INFO for consistent behavior.
   LOG_LEVEL=INFO "$BINARY" --order "$order" "$input" \
     > /dev/null 2> "${order}.log"
   RUN_RC=$?
@@ -98,7 +95,6 @@ run_one() {  # $1 = order (asc|desc)
       split($2, a, " "); print a[1] }' "${order}.log")
 
   if [[ -z $RUN_ELAPSED ]] || [[ $RUN_ELAPSED == *[!0-9.]* ]]; then
-    bad "could not read elapsed time from the log"
     RUN_ELAPSED=0
   fi
 
@@ -106,86 +102,89 @@ run_one() {  # $1 = order (asc|desc)
   RUN_LOG="${order}.log"
 }
 
-# Check everything for one completed run.
-check_one() {  # $1 = order  $2 = expected file  $3 = output file name
+# Check everything for one completed run. Prints one PASS/FAIL line.
+check_one() {
   local order=$1 exp=$2 outfile=$3
-  RUN_BAD=0
+  local case_fail=0
+  local case_errors=()
 
   # 1. exit code
   if (( RUN_RC == 0 )); then
-    ok "$order: exit code is 0"
+    pass=$((pass + 1))
   else
-    bad "$order: expected exit code 0, got $RUN_RC"; RUN_BAD=1
+    fail=$((fail + 1)); case_fail=1
+    case_errors+=("expected exit 0, got $RUN_RC")
   fi
 
   # 2. generated output file name
   if [[ -f "$outfile" ]]; then
-    ok "$order: output file named \"$outfile\""
+    pass=$((pass + 1))
   else
-    bad "$order: expected output file \"$outfile\" was not created"; RUN_BAD=1
+    fail=$((fail + 1)); case_fail=1
+    case_errors+=("expected output file \"$outfile\" was not created")
   fi
 
   # 3. content comparison
   if [[ -f "$outfile" ]]; then
     if diff -q "$exp" "$outfile" > /dev/null 2>&1; then
-      ok "$order: content matches expected ($n_lines lines)"
+      pass=$((pass + 1))
     else
-      bad "$order: content mismatch for $outfile:"; RUN_BAD=1
-      diff "$exp" "$outfile" | head -10 | sed 's/^/          /'
+      fail=$((fail + 1)); case_fail=1
+      case_errors+=("content mismatch for $outfile")
     fi
   fi
 
-  # 4. no WARN log expected on this clean input
+  # 4. no WARN log expected on clean input
   if grep -q "\[WARN " "$RUN_LOG" 2> /dev/null; then
-    bad "$order: unexpected WARN log:"; RUN_BAD=1
-    grep "\[WARN " "$RUN_LOG" | head -5 | sed 's/^/          /'
+    fail=$((fail + 1)); case_fail=1
+    case_errors+=("unexpected WARN log")
   else
-    ok "$order: no WARN log"
+    pass=$((pass + 1))
+  fi
+
+  if (( case_fail == 0 )); then
+    print "  ${c_green}PASS${c_reset}  ${order} ${c_dim}(${RUN_MS} ms)${c_reset}"
+  else
+    print "  ${c_red}FAIL${c_reset}  ${order} ${c_dim}(${RUN_MS} ms)${c_reset}"
+    failure_details+=("${order}:")
+    for err in "${case_errors[@]}"; do
+      failure_details+=("        $err")
+    done
   fi
 }
 
 # ---- ascending run -------------------------------------------------------
 ASC_OUT=$(derive_out asc)
-print ""
-print -r -- "-- asc run --"
 run_one asc
-ASC_RC=$RUN_RC; ASC_ELAPSED=$RUN_ELAPSED; ASC_MS=$RUN_MS
-ASC_LOG=$RUN_LOG
 check_one asc "expected_asc.txt" "$ASC_OUT"
-if (( RUN_BAD )); then runs_fail=$((runs_fail + 1)); else runs_pass=$((runs_pass + 1)); fi
 
 # ---- descending run ------------------------------------------------------
 DESC_OUT=$(derive_out desc)
-print ""
-print -r -- "-- desc run --"
 run_one desc
-DESC_RC=$RUN_RC; DESC_ELAPSED=$RUN_ELAPSED; DESC_MS=$RUN_MS
-DESC_LOG=$RUN_LOG
 check_one desc "expected_desc.txt" "$DESC_OUT"
-if (( RUN_BAD )); then runs_fail=$((runs_fail + 1)); else runs_pass=$((runs_pass + 1)); fi
 
-# ---- recap ---------------------------------------------------------------
-print ""
-print "==================================================="
-print " Performance test recap"
-print "---------------------------------------------------"
-print "   input   : ${PERF_INPUT:t}"
-print "            $n_lines lines, $n_bytes bytes"
-print "   asc     : exit=$ASC_RC  elapsed=${ASC_ELAPSED}s (${ASC_MS} ms)"
-print "   desc    : exit=$DESC_RC  elapsed=${DESC_ELAPSED}s (${DESC_MS} ms)"
-print "---------------------------------------------------"
-if (( fail > 0 )); then
-  print " Results: $runs_pass/$((runs_pass + runs_fail)) runs passed, $pass/$((pass + fail)) checks passed"
-  print "           $runs_fail run(s), $fail check(s) failed"
-else
-  print " Results: $runs_pass runs and $pass checks passed, 0 runs and 0 checks failed"
+# ---- print failure details if any ----------------------------------------
+if (( ${#failure_details[@]} > 0 )); then
+  print ""
+  print "  ${c_red}Failures:${c_reset}"
+  for line in "${failure_details[@]}"; do
+    print "    $line"
+  done
 fi
-print "==================================================="
+
+# ---- summary -------------------------------------------------------------
+print ""
+total=$((pass + fail))
+if (( fail == 0 )); then
+  print "  ${c_green}$pass passed${c_reset}${c_dim}, $total assertions (2 runs)${c_reset}"
+else
+  print "  ${c_green}$pass passed${c_reset}, ${c_red}$fail failed${c_reset}${c_dim}, $total assertions (2 runs)${c_reset}"
+fi
 
 # ---- cleanup -------------------------------------------------------------
 cd "$ROOT"
 if (( fail > 0 )); then
-  print "Sandbox kept for inspection: $SANDBOX"
+  print "  Sandbox kept for inspection: $SANDBOX"
   exit 1
 fi
 rm -rf "$SANDBOX"

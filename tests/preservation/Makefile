@@ -22,26 +22,26 @@ TESTS := test_2e_sequential_fallback
 all: $(TESTS)
 
 test_2e_sequential_fallback: test_2e_sequential_fallback.c
-	$(CC) $(CFLAGS) -Wno-unused-function -o $@ $< $(LDLIBS)
+	@$(CC) $(CFLAGS) -Wno-unused-function -o $@ $< $(LDLIBS)
 
 run: all
-	@echo "============================================"
-	@echo "  Preservation tests (fault-injection)"
-	@echo "============================================"
 	@pass=0; fail=0; \
-	for t in $(TESTS); do \
-		echo "  --- $$t ---"; \
-		./$$t 2>/dev/null; \
-		rc=$$?; \
-		if [ $$rc -eq 0 ]; then \
-			pass=$$((pass + 1)); \
-			echo "      PASS"; \
-		else \
-			fail=$$((fail + 1)); \
-			echo "      FAIL (exit $$rc)"; \
-		fi; \
-	done; \
-	echo "  Preservation: $$pass passed, $$fail failed"; \
+	./test_2e_sequential_fallback >/dev/null 2>/dev/null; \
+	rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+		pass=$$((pass + 1)); \
+		printf '  \033[32mPASS\033[0m  %s\n' "sequential fallback (OOM)"; \
+	else \
+		fail=$$((fail + 1)); \
+		printf '  \033[31mFAIL\033[0m  %s (exit %d)\n' "sequential fallback (OOM)" "$$rc"; \
+	fi; \
+	echo ""; \
+	total=$$((pass + fail)); \
+	if [ $$fail -eq 0 ]; then \
+		printf '  \033[32m%d passed\033[0m\033[2m, %d assertions\033[0m\n' "$$pass" "$$total"; \
+	else \
+		printf '  \033[32m%d passed\033[0m, \033[31m%d failed\033[0m\033[2m, %d assertions\033[0m\n' "$$pass" "$$fail" "$$total"; \
+	fi; \
 	[ $$fail -eq 0 ]
 
 clean:

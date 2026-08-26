@@ -27,35 +27,41 @@ all: $(TESTS)
 # -O0 to prevent optimizations that might interfere with fault injection
 # -Wno-unused-function to suppress warnings from included-but-unused functions
 test_1a_pthread_create_fail: test_1a_pthread_create_fail.c
-	$(CC) $(CFLAGS) -Wno-unused-function -o $@ $< $(LDLIBS)
+	@$(CC) $(CFLAGS) -Wno-unused-function -o $@ $< $(LDLIBS)
 
 test_1b_pthread_join_fail: test_1b_pthread_join_fail.c
-	$(CC) $(CFLAGS) -Wno-unused-function -o $@ $< $(LDLIBS)
+	@$(CC) $(CFLAGS) -Wno-unused-function -o $@ $< $(LDLIBS)
 
 test_1d_fflush_fclose: test_1d_fflush_fclose.c
-	$(CC) $(CFLAGS) -Wno-unused-function -o $@ $< $(LDLIBS)
+	@$(CC) $(CFLAGS) -Wno-unused-function -o $@ $< $(LDLIBS)
 
 test_1e_oom_list: test_1e_oom_list.c
-	$(CC) $(CFLAGS) -Wno-unused-function -o $@ $< $(LDLIBS)
+	@$(CC) $(CFLAGS) -Wno-unused-function -o $@ $< $(LDLIBS)
 
 run: all
-	@echo "============================================"
-	@echo "  Exploration tests (fault-injection)"
-	@echo "============================================"
 	@pass=0; fail=0; \
-	for t in $(TESTS); do \
-		echo "  --- $$t ---"; \
-		./$$t 2>/dev/null; \
+	run_one() { \
+		./$$1 >/dev/null 2>/dev/null; \
 		rc=$$?; \
 		if [ $$rc -eq 0 ]; then \
 			pass=$$((pass + 1)); \
-			echo "      PASS"; \
+			printf '  \033[32mPASS\033[0m  %s\n' "$$2"; \
 		else \
 			fail=$$((fail + 1)); \
-			echo "      FAIL (exit $$rc)"; \
+			printf '  \033[31mFAIL\033[0m  %s (exit %d)\n' "$$2" "$$rc"; \
 		fi; \
-	done; \
-	echo "  Exploration: $$pass passed, $$fail failed"; \
+	}; \
+	run_one test_1a_pthread_create_fail "pthread_create failure"; \
+	run_one test_1b_pthread_join_fail   "pthread_join failure"; \
+	run_one test_1d_fflush_fclose       "fflush/fclose handling"; \
+	run_one test_1e_oom_list            "malloc failure (list)"; \
+	echo ""; \
+	total=$$((pass + fail)); \
+	if [ $$fail -eq 0 ]; then \
+		printf '  \033[32m%d passed\033[0m\033[2m, %d assertions\033[0m\n' "$$pass" "$$total"; \
+	else \
+		printf '  \033[32m%d passed\033[0m, \033[31m%d failed\033[0m\033[2m, %d assertions\033[0m\n' "$$pass" "$$fail" "$$total"; \
+	fi; \
 	[ $$fail -eq 0 ]
 
 clean:
