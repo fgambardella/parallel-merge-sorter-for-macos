@@ -3,44 +3,34 @@
 # run_perf_test.zsh - Performance test for the sorter on a large file
 #
 # Runs the sorter on a significative input (tests/data/random-words.txt,
-# 2643 real words from Shreda/pentestTools) in an isolated sandbox, in
-# both directions (asc and desc), and for each run:
+# 2643 real words) in an isolated sandbox, in both directions (asc and
+# desc), and for each run:
 #   1. checks the exit code (must be 0),
 #   2. checks the generated output file name,
 #   3. compares the generated output byte-for-byte with an expected
-#      file produced independently by combining zsh text tools:
-#
-#        awk  ->  the sorter's line-filtering rules (strip a trailing
-#                 CR, drop empty lines and lines > MAX_LENGTH)
-#      | sort ->  lexicographic ordering in the C locale (pure byte
-#                 order, the same ordering strcmp uses; -r for desc)
-#
-#   4. checks that no WARN log was emitted (the input is clean: no
-#      empty lines, no lines over MAX_LENGTH).
-#
-# Timing is done inside the sorter itself (nanosecond precision) and
-# emitted as an INFO log line ("Elapsed time: <s>.<ns> s"); this
-# script only parses that line from the run log to fill the recap.
+#      file produced independently by combining zsh text tools,
+#   4. checks that no WARN log was emitted.
 #
 # The input can be overridden for stress runs:
 #       PERF_INPUT=/path/to/bigger/file zsh tests/run_perf_test.zsh
 #
 # Usage:  ./run_perf_test.zsh
-# Exits 0 when every check passes, 1 otherwise. On failure the sandbox
-# is kept (under tests/_perf_sandbox) for inspection.
+# Exits 0 when every check passes, 1 otherwise.
 
 set -uo pipefail
 
 SCRIPT_DIR="${0:A:h}"
 ROOT="${SCRIPT_DIR:h}"
 BINARY="${ROOT}/sorter"
-PERF_INPUT="${PERF_INPUT:-${SCRIPT_DIR}/data/random-words.txt}"
 SANDBOX="${SCRIPT_DIR}/_perf_sandbox"
 MAX_LENGTH=256   # must match MAX_LENGTH in main.c
 
-# Deterministic text processing and /usr/bin/time output regardless of
-# the user's locale (e.g. it_IT would print "0,06s" and Italian labels).
+# Deterministic text processing regardless of the user's locale.
 export LC_ALL=C
+
+# L-04 fix: canonicalize the input path BEFORE cd.
+PERF_INPUT="${PERF_INPUT:-${SCRIPT_DIR}/data/random-words.txt}"
+PERF_INPUT="${PERF_INPUT:A}"
 
 pass=0; fail=0
 runs_pass=0; runs_fail=0
@@ -50,8 +40,7 @@ bad() { fail=$((fail + 1));  print "      ✗ $1"; }
 # ---- preconditions ---------------------------------------------------
 if [[ ! -x $BINARY ]]; then
   print "Building sorter ..."
-  ( cd "$ROOT" && cc -Wall -Wextra -O2 -o sorter \
-      main.c logging.c list.c io.c mergesort.c -pthread ) || {
+  ( cd "$ROOT" && make build ) || {
     print -u2 "Build failed."; exit 1 }
 fi
 if [[ ! -f $PERF_INPUT ]]; then
@@ -61,14 +50,15 @@ fi
 # ---- sandbox -----------------------------------------------------------
 rm -rf "$SANDBOX"
 mkdir -p "$SANDBOX"
-cp "$PERF_INPUT" "$SANDBOX/"
+# L-04 fix: copy to a collision-proof name in the sandbox.
+cp "$PERF_INPUT" "$SANDBOX/perf_input.txt"
 cd "$SANDBOX"
-input="${PERF_INPUT:t}"
+input="perf_input.txt"
 
 # Derive the output file name the same way the sorter does
 # (build_output_path in io.c): insert "_ordered_<dir>" right before
-# the last extension; a missing dot (or a leading dot, i.e. a hidden
-# file) means the suffix is appended to the whole name.
+# the last extension in the basename; a missing dot (or a leading dot)
+# means the suffix is appended to the whole name.
 derive_out() {  # $1 = asc|desc  ->  prints the expected output name
   local base="$input"
   if [[ $base == *.* && $base != .* ]]; then
@@ -83,8 +73,8 @@ n_bytes=$(wc -c < "$PERF_INPUT" | tr -d ' ')
 
 print "== perf: large-file performance test =="
 print "   input: $input ($n_lines lines, $n_bytes bytes)"
-# Build the expected output for a given direction by combining zsh
-# text tools (see the header): awk filtering | LC_ALL=C sort [-r].
+
+# Build expected output for a given direction.
 make_expected() {  # $1 = asc|desc
   local dir=$1 flag=()
   [[ $dir == desc ]] && flag+=(-r)
@@ -96,23 +86,17 @@ make_expected asc
 make_expected desc
 
 # ---- one run --------------------------------------------------------------
-# The sorter is invoked from inside the sandbox (so the output file is
-# created next to the input copy); it measures its own wall-clock
-# elapsed time (nanosecond precision) and logs it as an INFO line:
-# "Elapsed time: <s>.<ns> s".
-# Globals set for the caller:
-# RUN_RC, RUN_ELAPSED (s), RUN_MS (integer), RUN_LOG.
 run_one() {  # $1 = order (asc|desc)
   local order=$1
 
-  "$BINARY" --order "$order" "$input" \
+  # M-08 fix: force LOG_LEVEL=INFO for consistent behavior.
+  LOG_LEVEL=INFO "$BINARY" --order "$order" "$input" \
     > /dev/null 2> "${order}.log"
   RUN_RC=$?
 
   RUN_ELAPSED=$(awk -F'Elapsed time: ' '/Elapsed time:/ {
       split($2, a, " "); print a[1] }' "${order}.log")
 
-  # sanity: the elapsed-time log line must have been parsed
   if [[ -z $RUN_ELAPSED ]] || [[ $RUN_ELAPSED == *[!0-9.]* ]]; then
     bad "could not read elapsed time from the log"
     RUN_ELAPSED=0
@@ -122,7 +106,7 @@ run_one() {  # $1 = order (asc|desc)
   RUN_LOG="${order}.log"
 }
 
-# Check everything for one completed run. Sets RUN_BAD (0 or 1).
+# Check everything for one completed run.
 check_one() {  # $1 = order  $2 = expected file  $3 = output file name
   local order=$1 exp=$2 outfile=$3
   RUN_BAD=0
@@ -185,7 +169,7 @@ print ""
 print "==================================================="
 print " Performance test recap"
 print "---------------------------------------------------"
-print "   input   : $input"
+print "   input   : ${PERF_INPUT:t}"
 print "            $n_lines lines, $n_bytes bytes"
 print "   asc     : exit=$ASC_RC  elapsed=${ASC_ELAPSED}s (${ASC_MS} ms)"
 print "   desc    : exit=$DESC_RC  elapsed=${DESC_ELAPSED}s (${DESC_MS} ms)"

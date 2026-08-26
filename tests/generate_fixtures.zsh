@@ -5,24 +5,20 @@
 # For every case it creates tests/fixtures/<case>/ containing:
 #   - the input file (with edge cases baked in),
 #   - the expected output file (unless the case must produce none),
-#   - a .meta file describing the case for run_tests.zsh:
-#       order=asc|desc
-#       input=<input file name>
-#       output=<expected output file name | NONE>
-#       exit=<expected exit code>
-#       expect_warn=yes|no
-#       use_default=yes|no   (run without --order, tests the default)
+#   - a .meta file describing the case for run_tests.zsh.
 #
 set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
 FIX="${SCRIPT_DIR}/fixtures"
 
+# L-04 fix: export LC_ALL=C for consistent awk/sort behavior.
+export LC_ALL=C
+
 rm -rf "$FIX"
 mkdir -p "$FIX"
 
 # write_case <name> <order> <input> <output|NONE> [warn] [use_default]
-# (The input file must already exist in $FIX/<name>/.)
 write_case() {
   local name="$1" order="$2" input="$3" output="$4"
   local warn="${5:-no}" use_default="${6:-no}"
@@ -33,7 +29,7 @@ write_case() {
   if [[ $output != NONE ]]; then
     [[ $order == desc ]] && flag+=(-r)
     # Expected content = the lines the sorter must keep (non-empty and
-    # <= MAX_LENGTH=256, CR stripped), sorted in byte order (strcmp).
+    # <= MAX_LENGTH=256, CR stripped only at end), sorted in byte order.
     awk '{ sub(/\r$/, ""); if (length($0) > 0 && length($0) <= 256) print }' \
       "$dir/$input" | LC_ALL=C sort $flag > "$dir/$output"
   fi
@@ -71,7 +67,7 @@ d="$FIX/overlong"; mkdir -p $d
 {
   printf 'apple\n'
   awk 'BEGIN { for (i = 0; i < 300; i++) printf "x" }'
-  printf 'cherry\n'
+  printf '\ncherry\n'
 } > "$d/overlong.txt"
 write_case overlong asc overlong.txt overlong_ordered_asc.txt yes
 
@@ -81,7 +77,7 @@ d="$FIX/ultralong"; mkdir -p $d
 {
   printf 'apple\n'
   awk 'BEGIN { for (i = 0; i < 5000; i++) printf "x" }'
-  printf 'banana\ncherry\n'
+  printf '\nbanana\ncherry\n'
 } > "$d/ultralong.txt"
 write_case ultralong asc ultralong.txt ultralong_ordered_asc.txt yes
 
@@ -95,11 +91,20 @@ d="$FIX/single"; mkdir -p $d
 printf 'solo\n' > "$d/single.txt"
 write_case single asc single.txt single_ordered_asc.txt
 
-# 8. empty input file -> no output file is written at all
-#    (the sorter intentionally LOG_WARNs when it has nothing to sort)
+# 8. empty input file -> empty output file is written (M-03 fix)
 d="$FIX/empty_file"; mkdir -p $d
 : > "$d/empty.txt"
-write_case empty_file asc empty.txt NONE yes
+{
+  print "order=asc"
+  print "input=empty.txt"
+  print "output=empty_ordered_asc.txt"
+  print "exit=0"
+  print "expect_warn=yes"
+  print "use_default=no"
+} > "$d/.meta"
+# The expected output is an empty file (M-03: empty run writes empty output).
+: > "$d/empty_ordered_asc.txt"
+print "  generated: empty_file"
 
 # 9. duplicates
 d="$FIX/duplicates"; mkdir -p $d
@@ -146,5 +151,52 @@ for _ in range(50):
                                  k=random.randint(3, 12))))
 " > "$d/random.txt"
 write_case random asc random.txt random_ordered_asc.txt
+
+# 16. hidden file (dotfile) - M-10: test dotfile handling
+d="$FIX/hidden_file"; mkdir -p $d
+printf 'charlie\nalpha\nbravo\n' > "$d/.hidden"
+write_case hidden_file asc .hidden .hidden_ordered_asc
+
+# 17. -- end-of-options marker (L-03 test)
+d="$FIX/dashdash"; mkdir -p $d
+printf 'beta\nalpha\n' > "$d/-dashed.txt"
+{
+  print "order=asc"
+  print "input=-dashed.txt"
+  print "output=-dashed_ordered_asc.txt"
+  print "exit=0"
+  print "expect_warn=no"
+  print "use_default=no"
+  print "use_dashdash=yes"
+} > "$d/.meta"
+printf 'alpha\nbeta\n' > "$d/-dashed_ordered_asc.txt"
+print "  generated: dashdash"
+
+# 18. embedded CR mid-line (M-02: CR not at end of line is preserved as data)
+d="$FIX/embedded_cr"; mkdir -p $d
+printf 'zeta\rhidden\nalpha\n' > "$d/embedded_cr.txt"
+# The expected output: embedded CR is kept verbatim. "zeta\rhidden" sorts
+# after "alpha" because 'z' > 'a'.
+{
+  printf 'alpha\n'
+  printf 'zeta\rhidden\n'
+} > "$d/embedded_cr_ordered_asc.txt"
+{
+  print "order=asc"
+  print "input=embedded_cr.txt"
+  print "output=embedded_cr_ordered_asc.txt"
+  print "exit=0"
+  print "expect_warn=no"
+  print "use_default=no"
+} > "$d/.meta"
+print "  generated: embedded_cr"
+
+# 19. dotted parent directory (H-01: dot in parent must not confuse extension)
+#     This is tested by running the sorter with a path containing a dotted dir.
+#     The fixture itself uses a basename without extension inside a dir whose
+#     NAME contains a dot - but since run_tests.zsh runs from inside the sandbox
+#     with just the basename, we simulate this by testing the extensionless + 
+#     hidden file cases (already covered). A separate integration test in 
+#     run_tests.zsh exercises the absolute-path scenario directly.
 
 echo "Done: fixtures generated under $FIX"

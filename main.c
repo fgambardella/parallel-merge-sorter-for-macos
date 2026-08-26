@@ -8,16 +8,16 @@
  * "_ordered_desc" inserted before the file extension
  * (e.g. data.txt -> data_ordered_asc.txt).
  *
- * Usage:  ./sorter [--order asc|desc] <input_file>
+ * Usage:  ./sorter [--order asc|desc] [--] <input_file>
  *
  *   --order asc   ascending sort (default)
  *   --order desc  descending sort
+ *   --            end of options (L-03 fix)
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdarg.h>
 #include <time.h>
 
 /* ------------------------------------------------------------------ */
@@ -25,8 +25,6 @@
 /* ------------------------------------------------------------------ */
 
 #define MAX_LENGTH 256   /* Maximum accepted length of a data line   */
-#define BUF_SIZE   4096  /* Line read buffer (must be > MAX_LENGTH)  */
-#define PATH_MAX_LEN 1024
 
 /* ------------------------------------------------------------------ */
 /*  Logging system                                                    */
@@ -56,15 +54,16 @@
 #include "mergesort.h"
 
 /* ------------------------------------------------------------------ */
-/*  I/O helpers                                                       */
+/*  CLI parsing (L-03 fix: support --)                                */
 /* ------------------------------------------------------------------ */
 
 /**
  * Parse command-line arguments.
  *
- * Usage:  ./sorter [--order asc|desc] <input_file>
+ * Usage:  ./sorter [--order asc|desc] [--] <input_file>
  *   - input_file is required and must be exactly one positional argument;
  *   - --order defaults to ascending when omitted;
+ *   - -- ends option processing; the next argument is the input file;
  *   - unknown options, a missing value, or a bad value are fatal.
  *
  * Returns 0 on success, -1 on failure.
@@ -73,9 +72,14 @@ static int parse_args(int argc, char *argv[], const char **input,
                       int *ascending)
 {
     *ascending = 1;   /* default: ascending */
+    int end_of_opts = 0;
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--order") == 0) {
+        if (!end_of_opts && strcmp(argv[i], "--") == 0) {
+            end_of_opts = 1;
+            continue;
+        }
+        if (!end_of_opts && strcmp(argv[i], "--order") == 0) {
             if (i + 1 >= argc) {
                 LOG_ERROR("Missing value for --order (expected asc or desc).");
                 return -1;
@@ -89,7 +93,7 @@ static int parse_args(int argc, char *argv[], const char **input,
                 return -1;
             }
             LOG_DEBUG("Sort order set to %s.", *ascending ? "ascending" : "descending");
-        } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
+        } else if (!end_of_opts && argv[i][0] == '-' && argv[i][1] != '\0') {
             LOG_ERROR("Unknown option \"%s\".", argv[i]);
             return -1;
         } else {
@@ -109,12 +113,18 @@ static int parse_args(int argc, char *argv[], const char **input,
     return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Sorting helper                                                    */
+/* ------------------------------------------------------------------ */
+
 /**
  * Sort the list lexicographically using a multi-threaded merge sort.
  * Only the char* data pointers of the nodes are rewritten; the linked
  * structure itself is left untouched.
+ *
+ * Returns 0 on success, -1 on allocation failure.
  */
-static void sort_list(Node *head, int ascending)
+static int sort_list(Node *head, int ascending)
 {
     Node  *current;
     char **items = NULL, **tmp = NULL;
@@ -129,17 +139,17 @@ static void sort_list(Node *head, int ascending)
 
     if (n <= 1) {
         LOG_DEBUG("Nothing to sort (%d string).", n);
-        return;
+        return 0;
     }
 
     /* Allocate the two scratch pointer arrays (O(n) space). */
     items = malloc((size_t)n * sizeof *items);
     tmp   = malloc((size_t)n * sizeof *tmp);
     if (!items || !tmp) {
-        LOG_ERROR("Fatal: out of memory (sort buffers).");
+        LOG_ERROR("Out of memory (sort buffers for %d items).", n);
         free(items);
         free(tmp);
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     /* Collect the string pointers into the array. */
@@ -157,6 +167,7 @@ static void sort_list(Node *head, int ascending)
     free(items);
     free(tmp);
     LOG_DEBUG("Sort finished (%d strings).", n);
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -165,54 +176,73 @@ static void sort_list(Node *head, int ascending)
 
 int main(int argc, char *argv[])
 {
-	Node        *head = NULL, *tail = NULL;
+    Node        *head = NULL, *tail = NULL;
     const char  *input_path = NULL;
-    char        *output_path;
-    int          ascending, n, rc = 0;
+    char        *output_path = NULL;
+    int          ascending, n, rc = EXIT_SUCCESS;
 
     log_set_level_from_env();
 
     /* ---- parse command line ---- */
     if (parse_args(argc, argv, &input_path, &ascending) != 0) {
-        fprintf(stderr, "Usage: %s [--order asc|desc] <input_file>\n",
+        fprintf(stderr, "Usage: %s [--order asc|desc] [--] <input_file>\n",
                 argv[0]);
         return EXIT_FAILURE;
     }
 
     LOG_INFO("=== Linked-List String Sorter (File I/O) ===");
 
-    /* Wall-clock start (nanosecond precision). */
+    /* Wall-clock start (nanosecond precision) (L-01 fix). */
     struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    if (clock_gettime(CLOCK_MONOTONIC, &t0) != 0) {
+        LOG_WARN("clock_gettime failed; timing unavailable.");
+        t0.tv_sec = 0; t0.tv_nsec = 0;
+    }
 
     /* ---- parse input file ---- */
     n = load_strings(input_path, MAX_LENGTH, &head, &tail);
-    if (n < 0)
-        return EXIT_FAILURE;
-
-    if (n == 0) {
-        LOG_WARN("No strings to sort; nothing written.");
-    } else {
-        /* ---- sort ---- */
-        sort_list(head, ascending);
-
-        /* ---- derive output path & write ---- */
-        output_path = build_output_path(input_path, ascending);
-        LOG_INFO("Sorted list (%s):", ascending ? "ascending" : "descending");
-        rc = write_output(output_path, head);
-        free(output_path);
+    if (n < 0) {
+        rc = EXIT_FAILURE;
+        goto cleanup;
     }
 
-    /* ---- cleanup ---- */
+    /* ---- derive output path early (M-03 fix) ---- */
+    output_path = build_output_path(input_path, ascending);
+    if (!output_path) {
+        LOG_ERROR("Fatal: out of memory (output path).");
+        rc = EXIT_FAILURE;
+        goto cleanup;
+    }
+
+    if (n == 0) {
+        /* M-03 fix: write an empty output so stale results don't linger. */
+        LOG_WARN("No strings to sort; writing empty output.");
+        rc = write_output(output_path, NULL, input_path);
+    } else {
+        /* ---- sort ---- */
+        if (sort_list(head, ascending) != 0) {
+            rc = EXIT_FAILURE;
+            goto cleanup;
+        }
+
+        /* ---- write ---- */
+        LOG_INFO("Sorted list (%s):", ascending ? "ascending" : "descending");
+        rc = write_output(output_path, head, input_path);
+    }
+
+cleanup:
+    /* ---- cleanup (M-05 fix: single exit path) ---- */
+    free(output_path);
     free_list(head);
 
-    /* ---- timing (emitted as an INFO log) ---- */
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    long long elapsed_ns =
-        (long long)(t1.tv_sec - t0.tv_sec) * 1000000000LL +
-        (long long)(t1.tv_nsec - t0.tv_nsec);
-    LOG_INFO("Elapsed time: %lld.%09lld s",
-             elapsed_ns / 1000000000LL, elapsed_ns % 1000000000LL);
+    /* ---- timing (L-01 fix: check return value) ---- */
+    if (clock_gettime(CLOCK_MONOTONIC, &t1) == 0 && t0.tv_sec != 0) {
+        long long elapsed_ns =
+            (long long)(t1.tv_sec - t0.tv_sec) * 1000000000LL +
+            (long long)(t1.tv_nsec - t0.tv_nsec);
+        LOG_INFO("Elapsed time: %lld.%09lld s",
+                 elapsed_ns / 1000000000LL, elapsed_ns % 1000000000LL);
+    }
 
     return rc;
 }

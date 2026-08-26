@@ -18,6 +18,11 @@
  *   n         - number of elements in items
  *   ascending - non-zero for ascending order, zero for descending
  *
+ * Preconditions:
+ *   - items and tmp must point to valid arrays of at least n elements.
+ *   - n must be >= 0.
+ *   - tmp must not overlap items.
+ *
  * All internal helpers, the per-thread job struct, and the tuning
  * constants are private to mergesort.c; no global state is used.
  */

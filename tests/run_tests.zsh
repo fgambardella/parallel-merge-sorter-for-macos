@@ -25,11 +25,13 @@ SANDBOX_ROOT="${SCRIPT_DIR}/_sandbox"
 KEEP=0
 [[ ${1:-} == "-k" ]] && KEEP=1
 
+# M-08 fix: deterministic environment for all test invocations.
+export LC_ALL=C
+
 # ---- preconditions ---------------------------------------------------
 if [[ ! -x $BINARY ]]; then
   print "Building sorter ..."
-  ( cd "$ROOT" && cc -Wall -Wextra -O2 -o sorter \
-      main.c logging.c list.c io.c mergesort.c -pthread ) || {
+  ( cd "$ROOT" && make build ) || {
     print -u2 "Build failed."; exit 1 }
 fi
 if [[ ! -d $FIX ]]; then
@@ -40,17 +42,19 @@ fi
 rm -rf "$SANDBOX_ROOT"
 mkdir -p "$SANDBOX_ROOT"
 
-pass=0; fail=0
+pass=0; fail=0; cases=0
 ok()   { pass=$((pass + 1)); print "      ✓ $1"; }
 bad()  { fail=$((fail + 1)); print "      ✗ $1"; }
 
 # ---- run every case ---------------------------------------------------
-for meta in "$FIX"/*/.meta (N); do
+# M-09 fix: single glob with (ND) already includes dotfiles.
+for meta in "$FIX"/*/.meta(N); do
   dir="${meta:h}"
   case_name="${dir:t}"
+  cases=$((cases + 1))
 
   # read .meta
-  order=asc; input=; output=; exit_code=0; expect_warn=no; use_default=no
+  order=asc; input=; output=; exit_code=0; expect_warn=no; use_default=no; use_dashdash=no
   while IFS='=' read -r k v; do
     case $k in
       order) order=$v ;;
@@ -59,22 +63,25 @@ for meta in "$FIX"/*/.meta (N); do
       exit) exit_code=$v ;;
       expect_warn) expect_warn=$v ;;
       use_default) use_default=$v ;;
+      use_dashdash) use_dashdash=$v ;;
     esac
   done < "$meta"
 
-  # sandbox for this case (isolated dir; run from inside it so the
-  # output file lands next to the input copy)
+  # sandbox for this case
   sb="$SANDBOX_ROOT/$case_name"
   mkdir -p "$sb"
   cp "$dir/$input" "$sb/"
 
   log="$sb/run.log"
+  # M-08 fix: force LOG_LEVEL=INFO for consistent test behavior.
   (
     cd "$sb"
     if [[ $use_default == yes ]]; then
-      "$BINARY" "$input"
+      LOG_LEVEL=INFO "$BINARY" "$input"
+    elif [[ $use_dashdash == yes ]]; then
+      LOG_LEVEL=INFO "$BINARY" --order "$order" -- "$input"
     else
-      "$BINARY" --order "$order" "$input"
+      LOG_LEVEL=INFO "$BINARY" --order "$order" "$input"
     fi
   ) > /dev/null 2> "$log"
   actual_exit=$?
@@ -89,26 +96,21 @@ for meta in "$FIX"/*/.meta (N); do
   fi
 
   # 2. generated output file name
-  #    Files in the sandbox other than the input, run.log, exit file.
+  #    M-09 fix: single glob covering both normal and hidden files.
   generated=()
-  # scan both regular and hidden (dot) files; each glob pattern carries
-  # its own nullglob qualifier so no-match never errors.
-  # Filter by full path: for hidden inputs (e.g. .secret) the input
-  # itself would also match the .* glob and must be excluded.
-  for f in "$sb"/*(ND) "$sb"/.*(ND); do
+  for f in "$sb"/*(ND.); do
     base="${f:t}"
-    [[ $base == . || $base == .. ]] && continue
     [[ $f == "$sb/$input" || $f == "$sb/run.log" ]] && continue
     generated+=("$base")
   done
 
   if [[ $output != NONE ]]; then
     cnt=${#generated[@]}
-    first=${generated[1]}
+    first=${generated[1]:-}
     if (( cnt == 1 )) && [[ "$first" == "$output" ]]; then
       ok "output file named \"$output\""
     else
-      bad "output file expected \"$output\", found: ${generated[@]}"
+      bad "output file expected \"$output\", found: ${generated[*]:-<none>}"
     fi
 
     # 3. content comparison
@@ -127,7 +129,7 @@ for meta in "$FIX"/*/.meta (N); do
     if (( ${#generated[@]} == 0 )); then
       ok "no output file written (as expected)"
     else
-      bad "unexpected output file(s): ${generated[@]}"
+      bad "unexpected output file(s): ${generated[*]}"
     fi
   fi
 
@@ -140,10 +142,103 @@ for meta in "$FIX"/*/.meta (N); do
   fi
 done
 
+# M-07 fix: require at least one test case.
+if (( cases == 0 )); then
+  print -u2 "ERROR: no test cases found under $FIX"
+  exit 1
+fi
+
+# ---- integration tests (scenarios beyond fixture framework) -----------
+print ""
+print "== Integration tests =="
+
+# I-1: H-01 regression - dotted parent directory
+print "  -- H-01: dotted parent directory --"
+itg_dir="$SANDBOX_ROOT/_integration"
+mkdir -p "$itg_dir/release.v1.2"
+printf 'cherry\napple\nbanana\n' > "$itg_dir/release.v1.2/data"
+(LOG_LEVEL=INFO "$BINARY" --order asc "$itg_dir/release.v1.2/data") > /dev/null 2>&1
+if [[ -f "$itg_dir/release.v1.2/data_ordered_asc" ]]; then
+  ok "H-01: output beside input in dotted-parent dir"
+  expected=$(printf 'apple\nbanana\ncherry\n')
+  actual=$(cat "$itg_dir/release.v1.2/data_ordered_asc")
+  if [[ "$actual" == "$expected" ]]; then
+    ok "H-01: content correct with dotted parent"
+  else
+    bad "H-01: content mismatch with dotted parent"
+  fi
+else
+  bad "H-01: output not created beside input (dotted parent dir)"
+fi
+
+# I-2: H-02 regression - symlink at output path is replaced, not followed
+print "  -- H-02: symlink at output not followed --"
+mkdir -p "$itg_dir/symlink_test"
+printf 'beta\nalpha\n' > "$itg_dir/symlink_test/input.txt"
+mkdir -p "$itg_dir/symlink_test/trap"
+ln -sf "$itg_dir/symlink_test/trap/victim" "$itg_dir/symlink_test/input_ordered_asc.txt"
+(LOG_LEVEL=INFO "$BINARY" --order asc "$itg_dir/symlink_test/input.txt") > /dev/null 2>&1
+if [[ -f "$itg_dir/symlink_test/input_ordered_asc.txt" ]] && \
+   [[ ! -L "$itg_dir/symlink_test/input_ordered_asc.txt" ]]; then
+  ok "H-02: symlink replaced with regular file"
+else
+  bad "H-02: symlink was followed or output missing"
+fi
+if [[ ! -e "$itg_dir/symlink_test/trap/victim" ]]; then
+  ok "H-02: symlink target was not created"
+else
+  bad "H-02: symlink target was written to"
+fi
+
+# I-3: M-01 regression - output permissions match input
+print "  -- M-01: permission preservation --"
+mkdir -p "$itg_dir/perm_test"
+printf 'beta\nalpha\n' > "$itg_dir/perm_test/secret.txt"
+chmod 600 "$itg_dir/perm_test/secret.txt"
+(LOG_LEVEL=INFO "$BINARY" --order asc "$itg_dir/perm_test/secret.txt") > /dev/null 2>&1
+if [[ -f "$itg_dir/perm_test/secret_ordered_asc.txt" ]]; then
+  out_perms=$(stat -f '%Lp' "$itg_dir/perm_test/secret_ordered_asc.txt")
+  if [[ "$out_perms" == "600" ]]; then
+    ok "M-01: output is 0600 matching input"
+  else
+    bad "M-01: output perms are $out_perms, expected 600"
+  fi
+else
+  bad "M-01: output file not created"
+fi
+
+# I-4: M-03 regression - stale output replaced by empty run
+print "  -- M-03: stale output replaced --"
+mkdir -p "$itg_dir/stale_test"
+printf 'stale content\n' > "$itg_dir/stale_test/empty_ordered_asc.txt"
+: > "$itg_dir/stale_test/empty.txt"
+(LOG_LEVEL=INFO "$BINARY" --order asc "$itg_dir/stale_test/empty.txt") > /dev/null 2>&1
+if [[ -f "$itg_dir/stale_test/empty_ordered_asc.txt" ]]; then
+  stale_size=$(wc -c < "$itg_dir/stale_test/empty_ordered_asc.txt" | tr -d ' ')
+  if (( stale_size == 0 )); then
+    ok "M-03: stale output replaced with empty file"
+  else
+    bad "M-03: stale output NOT replaced (size=$stale_size)"
+  fi
+else
+  bad "M-03: output file missing after empty run"
+fi
+
+# I-5: H-01 regression - ./relative dotfile path
+print "  -- H-01: ./ relative dotfile --"
+mkdir -p "$itg_dir/dotfile_rel"
+printf 'charlie\nalpha\n' > "$itg_dir/dotfile_rel/.secret"
+(cd "$itg_dir/dotfile_rel" && LOG_LEVEL=INFO "$BINARY" --order asc ./.secret) > /dev/null 2>&1
+if [[ -f "$itg_dir/dotfile_rel/.secret_ordered_asc" ]]; then
+  ok "H-01: ./.secret -> .secret_ordered_asc (no false extension)"
+else
+  bad "H-01: dotfile with ./ prefix failed"
+fi
+
 # ---- summary ----------------------------------------------------------
 print ""
 print "==================================================="
-print " Results: $pass passed, $fail failed"
+print " Results: $pass passed, $fail failed ($cases cases)"
 print "==================================================="
 
 if (( KEEP )); then

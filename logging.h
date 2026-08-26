@@ -9,9 +9,20 @@
  *
  * The current level is module-private state inside logging.c and is
  * changed only through log_set_level() / log_set_level_from_env().
+ *
+ * Thread safety: log_set_level_from_env() should be called once at
+ * startup before any threads are created.  After that, the log level
+ * is immutable and logging is safe from any thread.  Each log record
+ * is emitted atomically under a mutex (M-06 fix).
  * ------------------------------------------------------------------ */
 #ifndef LOGGING_H
 #define LOGGING_H
+
+#ifdef __GNUC__
+#define LOG_PRINTF_ATTR __attribute__((format(printf, 4, 5)))
+#else
+#define LOG_PRINTF_ATTR
+#endif
 
 typedef enum {
     LOG_LEVEL_DEBUG = 0,
@@ -20,10 +31,12 @@ typedef enum {
     LOG_LEVEL_ERROR = 3
 } LogLevel;
 
-/** Set the minimum severity that will be emitted. */
+/** Set the minimum severity that will be emitted.
+ *  Must be called before any threads are created. */
 void log_set_level(LogLevel level);
 
-/** Pick up an optional LOG_LEVEL=DEBUG|INFO|WARN|ERROR env setting. */
+/** Pick up an optional LOG_LEVEL=DEBUG|INFO|WARN|ERROR env setting.
+ *  Must be called before any threads are created. */
 void log_set_level_from_env(void);
 
 /**
@@ -31,7 +44,9 @@ void log_set_level_from_env(void);
  *
  * Emits:  2026-08-19 15:48:01 [LEVEL] file:line message
  * Messages with severity below the active level are discarded.
+ * Thread-safe: records are serialized by an internal mutex.
  */
+LOG_PRINTF_ATTR
 void log_write(LogLevel level, const char *file, int line,
                const char *fmt, ...);
 

@@ -116,7 +116,15 @@ static void msort(char **src, char **tmp, int lo, int hi,
                 free(job);
             } else {
                 msort(src, tmp, mid, hi, ascending, depth + 1);
-                pthread_join(tid, NULL);
+                /* L-01 fix: check pthread_join return value. */
+                int jr = pthread_join(tid, NULL);
+                if (jr != 0) {
+                    LOG_ERROR("msort: pthread_join failed (err=%d); "
+                              "merge may use unsorted data.", jr);
+                    /* Cannot safely proceed with merge if join failed;
+                     * re-sort left half inline as a fallback. */
+                    msort(src, tmp, lo, mid, ascending, depth + 1);
+                }
             }
         }
     } else {
@@ -150,5 +158,7 @@ static void msort(char **src, char **tmp, int lo, int hi,
  */
 void parallel_mergesort(char **items, char **tmp, int n, int ascending)
 {
+    if (n <= 0)
+        return;
     msort(items, tmp, 0, n, ascending, 0);
 }
