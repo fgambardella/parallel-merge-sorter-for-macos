@@ -1,6 +1,4 @@
-<div align="center">
-
-```
+```text
                    ██████╗  █████╗ ██████╗  █████╗ ██╗     ██╗     ███████╗██╗
                    ██╔══██╗██╔══██╗██╔══██╗██╔══██╗██║     ██║     ██╔════╝██║
                    ██████╔╝███████║██████╔╝███████║██║     ██║     █████╗  ██║
@@ -20,8 +18,6 @@
             ██║     ╚██████╔╝██║  ██║    ██║ ╚═╝ ██║██║  ██║╚██████╗╚██████╔╝███████║
             ╚═╝      ╚═════╝ ╚═╝  ╚═╝    ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝
 ```
-
-</div>
 
 > **Target platform: macOS only** — Apple silicon and Intel Macs.
 > The build system (`cc`/`clang` from Xcode Command Line Tools), the test scripts (`zsh`), and the memory-leak verification (`leaks`, `codesign`) rely on macOS-specific tooling. Linux and Windows are **not** supported.
