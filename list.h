@@ -15,15 +15,16 @@ typedef struct Node {
 
 /**
  * Allocate a new node (data + string) on the heap.
- * Exits the process on allocation failure (fatal error).
+ * Returns NULL on allocation failure.
  */
 Node *list_new_node(const char *str);
 
 /**
  * Append a new string node to the tail of the list, updating
  * *head / *tail as needed.
+ * Returns 0 on success, -1 on allocation failure.
  */
-void list_append(Node **head, Node **tail, const char *str);
+int list_append(Node **head, Node **tail, const char *str);
 
 /** Free every node and the string it owns. */
 void free_list(Node *head);

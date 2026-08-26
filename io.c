@@ -108,11 +108,11 @@ static int drain_long_line(FILE *fp, char *buf, size_t bufsz)
  * Returns the number of strings loaded, or -1 on fatal I/O errors.
  */
 int load_strings(const char *path, size_t max_length,
-                 Node **head, Node **tail)
+                 Node **head, Node **tail, mode_t *input_mode)
 {
-    FILE *fp;
-    char  line[BUF_SIZE];
-    int   line_no = 0, count = 0;
+    FILE  *fp;
+    char   line[BUF_SIZE];
+    size_t line_no = 0, count = 0;
 
     if (max_length >= BUF_SIZE) {
         LOG_ERROR("max_length (%zu) must be < BUF_SIZE (%d).",
@@ -127,9 +127,28 @@ int load_strings(const char *path, size_t max_length,
         return -1;
     }
 
+    /* Capture input file permissions via fstat on open descriptor
+     * (C-M02 fix: eliminates TOCTOU window). */
+    if (input_mode) {
+        struct stat st;
+        if (fstat(fileno(fp), &st) == 0) {
+            *input_mode = st.st_mode & 0777;
+        } else {
+            *input_mode = 0600;  /* Conservative fallback */
+        }
+    }
+
     LOG_INFO("Reading strings from \"%s\".", path);
 
-    while (fgets(line, sizeof(line), fp) != NULL) {
+    while (1) {
+        /* C-M01 fix: zero the buffer before fgets so we can detect
+         * embedded NUL bytes by scanning for non-zero data beyond
+         * the first NUL that strlen reports. */
+        memset(line, 0, sizeof(line));
+
+        if (fgets(line, sizeof(line), fp) == NULL)
+            break;
+
         line_no++;
 
         size_t slen = strlen(line);
@@ -140,23 +159,62 @@ int load_strings(const char *path, size_t max_length,
          * the physical line so its tail is not parsed as a new one.
          * L-02 fix: use a helper that returns error/EOF clearly. */
         if (!has_newline && slen == sizeof(line) - 1) {
-            LOG_WARN("Line %d exceeds buffer; skipped.", line_no);
+            LOG_WARN("Line %zu exceeds buffer; skipped.", line_no);
             int dr = drain_long_line(fp, line, sizeof(line));
             if (dr < 0) {
-                LOG_ERROR("I/O error draining long line %d.", line_no);
+                LOG_ERROR("I/O error draining long line %zu.", line_no);
                 fclose(fp);
                 return -1;
             }
             continue;
         }
 
-        /* M-02 fix: reject embedded NUL bytes.
-         * If fgets didn't find '\n' AND strlen < bufsize-1, and we're
-         * not at EOF, there must be an embedded NUL byte. */
-        if (!has_newline && slen < sizeof(line) - 1 && !feof(fp)) {
-            LOG_WARN("Line %d contains embedded NUL byte(s); skipped.",
-                     line_no);
-            continue;
+        /* C-M01 fix: robust embedded NUL byte detection.
+         *
+         * Case 1 — newline present: data occupies [0, slen-1) with
+         * the newline at slen-1.  Any NUL in [0, slen-1) is an
+         * embedded NUL from the input.
+         *
+         * Case 2 — no newline, buffer not full: either EOF with a
+         * valid last line, or an embedded NUL.  For mid-stream NUL
+         * (!feof), fgets stopped because it hit the NUL, so more
+         * data remains.  For EOF with an embedded NUL, fgets read
+         * bytes including the NUL and data beyond it; since we
+         * zeroed the buffer, any non-zero byte after position slen
+         * proves fgets wrote data past the first NUL — meaning
+         * that NUL was embedded in the input. */
+        {
+            int has_embedded_nul = 0;
+
+            if (has_newline) {
+                /* Check for NUL before the newline character. */
+                if (slen > 1 && memchr(line, '\0', slen - 1) != NULL) {
+                    has_embedded_nul = 1;
+                }
+            } else if (slen < sizeof(line) - 1) {
+                if (!feof(fp)) {
+                    /* Mid-stream: fgets stopped early, more data in
+                     * the stream — definitely an embedded NUL. */
+                    has_embedded_nul = 1;
+                } else {
+                    /* EOF: check for non-zero bytes beyond the first
+                     * NUL (at position slen).  Because we zeroed the
+                     * buffer, any non-zero byte there was written by
+                     * fgets — proving the NUL at slen is embedded. */
+                    for (size_t i = slen + 1; i < sizeof(line); i++) {
+                        if (line[i] != '\0') {
+                            has_embedded_nul = 1;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (has_embedded_nul) {
+                LOG_WARN("Line %zu contains embedded NUL byte(s); skipped.",
+                         line_no);
+                continue;
+            }
         }
 
         /* Strip only a trailing LF, or trailing CRLF.  Embedded \r is
@@ -171,17 +229,21 @@ int load_strings(const char *path, size_t max_length,
         }
 
         if (line[0] == '\0') {
-            LOG_DEBUG("Line %d is empty; skipped.", line_no);
+            LOG_DEBUG("Line %zu is empty; skipped.", line_no);
             continue;
         }
 
         if (strlen(line) > max_length) {
-            LOG_WARN("Line %d exceeds MAX_LENGTH (%zu); skipped.",
+            LOG_WARN("Line %zu exceeds MAX_LENGTH (%zu); skipped.",
                      line_no, max_length);
             continue;
         }
 
-        list_append(head, tail, line);
+        if (list_append(head, tail, line) != 0) {
+            LOG_ERROR("Out of memory appending line %zu.", line_no);
+            fclose(fp);
+            return -1;
+        }
         count++;
     }
 
@@ -192,8 +254,8 @@ int load_strings(const char *path, size_t max_length,
     }
 
     fclose(fp);
-    LOG_INFO("Loaded %d string(s) from \"%s\".", count, path);
-    return count;
+    LOG_INFO("Loaded %zu string(s) from \"%s\".", count, path);
+    return (int)count;
 }
 
 /* ------------------------------------------------------------------ */
@@ -212,20 +274,15 @@ int load_strings(const char *path, size_t max_length,
  *
  * Returns EXIT_SUCCESS on success, EXIT_FAILURE on I/O error.
  */
-int write_output(const char *path, Node *head, const char *input_path)
+int write_output(const char *path, Node *head, mode_t input_mode)
 {
     int          fd = -1;
     FILE        *fp = NULL;
-    int          i  = 0;
+    size_t       i  = 0;
     const Node  *curr;
     char        *tmppath = NULL;
     size_t       pathlen = strlen(path);
-    struct stat  st;
-    mode_t       mode = 0644;  /* fallback if stat fails */
-
-    /* Determine permissions from input file (M-01). */
-    if (input_path && stat(input_path, &st) == 0)
-        mode = st.st_mode & 0777;
+    mode_t       mode = input_mode;
 
     /* Build temp file path: same directory + ".XXXXXX" suffix. */
     tmppath = malloc(pathlen + 8);
@@ -275,7 +332,9 @@ int write_output(const char *path, Node *head, const char *input_path)
     }
 
     /* Flush and close, checking for delayed write errors. */
-    if (fflush(fp) != 0 || fclose(fp) != 0) {
+    int flush_err = fflush(fp);
+    int close_err = fclose(fp);
+    if (flush_err != 0 || close_err != 0) {
         LOG_ERROR("Error finalizing \"%s\": %s.",
                   tmppath, strerror(errno));
         unlink(tmppath);
@@ -293,6 +352,6 @@ int write_output(const char *path, Node *head, const char *input_path)
     }
 
     free(tmppath);
-    LOG_INFO("Wrote %d string(s) to \"%s\".", i, path);
+    LOG_INFO("Wrote %zu string(s) to \"%s\".", i, path);
     return EXIT_SUCCESS;
 }

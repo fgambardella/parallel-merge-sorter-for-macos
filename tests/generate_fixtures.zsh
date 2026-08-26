@@ -199,4 +199,167 @@ print "  generated: embedded_cr"
 #     hidden file cases (already covered). A separate integration test in 
 #     run_tests.zsh exercises the absolute-path scenario directly.
 
+# 20. Bad CLI: unknown option
+d="$FIX/bad_cli_unknown_opt"; mkdir -p $d
+printf 'alpha\n' > "$d/input.txt"
+{
+  print "order=asc"
+  print "input=input.txt"
+  print "output=NONE"
+  print "exit=1"
+  print "expect_warn=no"
+  print "use_default=no"
+  print "cli_override=--invalid input.txt"
+} > "$d/.meta"
+print "  generated: bad_cli_unknown_opt"
+
+# 21. Bad CLI: missing --order value
+d="$FIX/bad_cli_missing_order_val"; mkdir -p $d
+printf 'alpha\n' > "$d/input.txt"
+{
+  print "order=asc"
+  print "input=input.txt"
+  print "output=NONE"
+  print "exit=1"
+  print "expect_warn=no"
+  print "use_default=no"
+  print "cli_override=--order"
+} > "$d/.meta"
+print "  generated: bad_cli_missing_order_val"
+
+# 22. Bad CLI: multiple input files
+d="$FIX/bad_cli_multi_files"; mkdir -p $d
+printf 'alpha\n' > "$d/file1.txt"
+printf 'beta\n' > "$d/file2.txt"
+{
+  print "order=asc"
+  print "input=file1.txt"
+  print "output=NONE"
+  print "exit=1"
+  print "expect_warn=no"
+  print "use_default=no"
+  print "cli_override=file1.txt file2.txt"
+} > "$d/.meta"
+print "  generated: bad_cli_multi_files"
+
+# 23. Bad CLI: invalid --order value
+d="$FIX/bad_cli_invalid_order"; mkdir -p $d
+printf 'alpha\n' > "$d/input.txt"
+{
+  print "order=asc"
+  print "input=input.txt"
+  print "output=NONE"
+  print "exit=1"
+  print "expect_warn=no"
+  print "use_default=no"
+  print "cli_override=--order random input.txt"
+} > "$d/.meta"
+print "  generated: bad_cli_invalid_order"
+
+# 24. Missing input file
+d="$FIX/missing_input"; mkdir -p $d
+# Note: we do NOT create the input file — it should not exist
+{
+  print "order=asc"
+  print "input=nonexistent.txt"
+  print "output=NONE"
+  print "exit=1"
+  print "expect_warn=no"
+  print "use_default=no"
+  print "cli_override=--order asc nonexistent.txt"
+} > "$d/.meta"
+print "  generated: missing_input"
+
+# 25. Boundary-length record: exactly 255 bytes (accepted)
+d="$FIX/boundary_255"; mkdir -p $d
+{
+  printf 'apple\n'
+  awk 'BEGIN { for (i = 0; i < 255; i++) printf "A" }'
+  printf '\ncherry\n'
+} > "$d/boundary.txt"
+write_case boundary_255 asc boundary.txt boundary_ordered_asc.txt
+
+# 26. Boundary-length record: exactly 256 bytes (accepted, at MAX_LENGTH)
+d="$FIX/boundary_256"; mkdir -p $d
+{
+  printf 'apple\n'
+  awk 'BEGIN { for (i = 0; i < 256; i++) printf "B" }'
+  printf '\ncherry\n'
+} > "$d/boundary.txt"
+write_case boundary_256 asc boundary.txt boundary_ordered_asc.txt
+
+# 27. Boundary-length record: exactly 257 bytes (rejected with WARN)
+d="$FIX/boundary_257"; mkdir -p $d
+{
+  printf 'apple\n'
+  awk 'BEGIN { for (i = 0; i < 257; i++) printf "C" }'
+  printf '\ncherry\n'
+} > "$d/boundary.txt"
+write_case boundary_257 asc boundary.txt boundary_ordered_asc.txt yes
+
+# 28. Embedded NUL byte mid-line: rejected with WARN
+d="$FIX/nul_midline"; mkdir -p $d
+{
+  printf 'apple\n'
+  printf 'he\x00llo\n'
+  printf 'cherry\n'
+} > "$d/nul_midline.txt"
+# Expected: only apple and cherry (nul line rejected)
+{
+  printf 'apple\n'
+  printf 'cherry\n'
+} > "$d/nul_midline_ordered_asc.txt"
+{
+  print "order=asc"
+  print "input=nul_midline.txt"
+  print "output=nul_midline_ordered_asc.txt"
+  print "exit=0"
+  print "expect_warn=yes"
+  print "use_default=no"
+} > "$d/.meta"
+print "  generated: nul_midline"
+
+# 29. Embedded NUL byte at EOF (no trailing newline): rejected with WARN
+d="$FIX/nul_at_eof"; mkdir -p $d
+{
+  printf 'apple\n'
+  printf 'beta\x00tail'
+} > "$d/nul_eof.txt"
+# Expected: only apple (beta\0tail rejected, note no trailing newline)
+{
+  printf 'apple\n'
+} > "$d/nul_eof_ordered_asc.txt"
+{
+  print "order=asc"
+  print "input=nul_eof.txt"
+  print "output=nul_eof_ordered_asc.txt"
+  print "exit=0"
+  print "expect_warn=yes"
+  print "use_default=no"
+} > "$d/.meta"
+print "  generated: nul_at_eof"
+
+# 30. Final record without trailing LF (valid, no NUL)
+d="$FIX/no_trailing_lf"; mkdir -p $d
+{
+  printf 'cherry\n'
+  printf 'apple\n'
+  printf 'banana'
+} > "$d/no_lf.txt"
+# Expected: all 3 lines sorted, each with trailing newline in output
+{
+  printf 'apple\n'
+  printf 'banana\n'
+  printf 'cherry\n'
+} > "$d/no_lf_ordered_asc.txt"
+{
+  print "order=asc"
+  print "input=no_lf.txt"
+  print "output=no_lf_ordered_asc.txt"
+  print "exit=0"
+  print "expect_warn=no"
+  print "use_default=no"
+} > "$d/.meta"
+print "  generated: no_trailing_lf"
+
 echo "Done: fixtures generated under $FIX"

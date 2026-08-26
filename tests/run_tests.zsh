@@ -54,7 +54,7 @@ for meta in "$FIX"/*/.meta(N); do
   cases=$((cases + 1))
 
   # read .meta
-  order=asc; input=; output=; exit_code=0; expect_warn=no; use_default=no; use_dashdash=no
+  order=asc; input=; output=; exit_code=0; expect_warn=no; use_default=no; use_dashdash=no; cli_override=
   while IFS='=' read -r k v; do
     case $k in
       order) order=$v ;;
@@ -64,19 +64,36 @@ for meta in "$FIX"/*/.meta(N); do
       expect_warn) expect_warn=$v ;;
       use_default) use_default=$v ;;
       use_dashdash) use_dashdash=$v ;;
+      cli_override) cli_override=$v ;;
     esac
   done < "$meta"
 
   # sandbox for this case
   sb="$SANDBOX_ROOT/$case_name"
   mkdir -p "$sb"
-  cp "$dir/$input" "$sb/"
+  # Copy input file(s) into sandbox. For missing_input test, the file
+  # intentionally does not exist - skip the copy in that case.
+  # Track copied files so we can exclude them from output-file checks.
+  copied_files=()
+  if [[ -n $cli_override ]]; then
+    # Copy all regular files (except .meta) so cli_override tests have their inputs
+    for src_file in "$dir"/*(ND.); do
+      [[ "${src_file:t}" == ".meta" ]] && continue
+      cp "$src_file" "$sb/"
+      copied_files+=("${src_file:t}")
+    done
+  elif [[ -f "$dir/$input" ]]; then
+    cp "$dir/$input" "$sb/"
+    copied_files+=("$input")
+  fi
 
   log="$sb/run.log"
   # M-08 fix: force LOG_LEVEL=INFO for consistent test behavior.
   (
     cd "$sb"
-    if [[ $use_default == yes ]]; then
+    if [[ -n $cli_override ]]; then
+      LOG_LEVEL=INFO "$BINARY" ${=cli_override}
+    elif [[ $use_default == yes ]]; then
       LOG_LEVEL=INFO "$BINARY" "$input"
     elif [[ $use_dashdash == yes ]]; then
       LOG_LEVEL=INFO "$BINARY" --order "$order" -- "$input"
@@ -100,7 +117,13 @@ for meta in "$FIX"/*/.meta(N); do
   generated=()
   for f in "$sb"/*(ND.); do
     base="${f:t}"
-    [[ $f == "$sb/$input" || $f == "$sb/run.log" ]] && continue
+    [[ $base == "run.log" ]] && continue
+    # Skip files that were copied as inputs
+    is_input=0
+    for cf in "${copied_files[@]}"; do
+      [[ $base == "$cf" ]] && { is_input=1; break; }
+    done
+    (( is_input )) && continue
     generated+=("$base")
   done
 

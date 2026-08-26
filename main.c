@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 /* ------------------------------------------------------------------ */
@@ -128,7 +129,7 @@ static int sort_list(Node *head, int ascending)
 {
     Node  *current;
     char **items = NULL, **tmp = NULL;
-    int    n = 0, i = 0;
+    size_t n = 0, i = 0;
 
     LOG_DEBUG("Starting %s sort (multi-threaded merge sort).",
               ascending ? "ascending" : "descending");
@@ -138,15 +139,15 @@ static int sort_list(Node *head, int ascending)
         n++;
 
     if (n <= 1) {
-        LOG_DEBUG("Nothing to sort (%d string).", n);
+        LOG_DEBUG("Nothing to sort (%zu string).", n);
         return 0;
     }
 
     /* Allocate the two scratch pointer arrays (O(n) space). */
-    items = malloc((size_t)n * sizeof *items);
-    tmp   = malloc((size_t)n * sizeof *tmp);
+    items = malloc(n * sizeof *items);
+    tmp   = malloc(n * sizeof *tmp);
     if (!items || !tmp) {
-        LOG_ERROR("Out of memory (sort buffers for %d items).", n);
+        LOG_ERROR("Out of memory (sort buffers for %zu items).", n);
         free(items);
         free(tmp);
         return -1;
@@ -157,7 +158,12 @@ static int sort_list(Node *head, int ascending)
         items[i++] = current->data;
 
     /* Multi-threaded merge sort (O(n log n)). */
-    parallel_mergesort(items, tmp, n, ascending);
+    if (parallel_mergesort(items, tmp, (int)n, ascending) != 0) {
+        LOG_ERROR("Parallel mergesort failed (thread error).");
+        free(items);
+        free(tmp);
+        return -1;
+    }
 
     /* Copy the sorted order back into the node data pointers. */
     i = 0;
@@ -166,7 +172,7 @@ static int sort_list(Node *head, int ascending)
 
     free(items);
     free(tmp);
-    LOG_DEBUG("Sort finished (%d strings).", n);
+    LOG_DEBUG("Sort finished (%zu strings).", n);
     return 0;
 }
 
@@ -180,6 +186,7 @@ int main(int argc, char *argv[])
     const char  *input_path = NULL;
     char        *output_path = NULL;
     int          ascending, n, rc = EXIT_SUCCESS;
+    mode_t       input_mode = 0600;  /* Conservative fallback */
 
     log_set_level_from_env();
 
@@ -200,7 +207,7 @@ int main(int argc, char *argv[])
     }
 
     /* ---- parse input file ---- */
-    n = load_strings(input_path, MAX_LENGTH, &head, &tail);
+    n = load_strings(input_path, MAX_LENGTH, &head, &tail, &input_mode);
     if (n < 0) {
         rc = EXIT_FAILURE;
         goto cleanup;
@@ -217,7 +224,7 @@ int main(int argc, char *argv[])
     if (n == 0) {
         /* M-03 fix: write an empty output so stale results don't linger. */
         LOG_WARN("No strings to sort; writing empty output.");
-        rc = write_output(output_path, NULL, input_path);
+        rc = write_output(output_path, NULL, input_mode);
     } else {
         /* ---- sort ---- */
         if (sort_list(head, ascending) != 0) {
@@ -227,7 +234,7 @@ int main(int argc, char *argv[])
 
         /* ---- write ---- */
         LOG_INFO("Sorted list (%s):", ascending ? "ascending" : "descending");
-        rc = write_output(output_path, head, input_path);
+        rc = write_output(output_path, head, input_mode);
     }
 
 cleanup:

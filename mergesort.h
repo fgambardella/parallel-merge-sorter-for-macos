@@ -27,6 +27,6 @@
  * constants are private to mergesort.c; no global state is used.
  */
 
-void parallel_mergesort(char **items, char **tmp, int n, int ascending);
+int parallel_mergesort(char **items, char **tmp, int n, int ascending);
 
 #endif /* MERGESORT_H */

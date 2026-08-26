@@ -36,12 +36,18 @@ $(BINARY): $(OBJ)
 
 # M-07 fix: always regenerate fixtures before tests.
 # Run the whole automated test suite (builds first if needed),
-# then the large-file performance test, then the memory leak check.
+# then the fault-injection tests, then the large-file performance
+# test, then the memory leak check.
 test: build fixtures
 	@echo "------------------------------"
 	@echo "| Running test suite ...     |"
 	@echo "------------------------------"
 	@zsh $(TESTS)/run_tests.zsh
+	@echo "----------------------------------------------"
+	@echo "| Running fault-injection tests ...          |"
+	@echo "----------------------------------------------"
+	@$(MAKE) -C $(TESTS)/exploration run
+	@$(MAKE) -C $(TESTS)/preservation run
 	@echo "-----------------------------------"
 	@echo "| Running performance test ...    |"
 	@echo "-----------------------------------"
@@ -58,4 +64,6 @@ fixtures:
 clean:
 	rm -f $(BINARY) $(OBJ) $(DEP)
 	rm -rf $(TESTS)/fixtures $(TESTS)/_sandbox $(TESTS)/_perf_sandbox $(TESTS)/_leak_sandbox
+	@$(MAKE) -C $(TESTS)/exploration clean
+	@$(MAKE) -C $(TESTS)/preservation clean
 	@echo "Cleaned."

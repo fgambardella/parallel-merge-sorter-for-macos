@@ -12,21 +12,21 @@
 
 /**
  * Allocate a new node (data + string) on the heap.
- * Exits the process on allocation failure (fatal error).
+ * Returns NULL on allocation failure.
  */
 Node *list_new_node(const char *str)
 {
     Node *new_node = malloc(sizeof(Node));
     if (!new_node) {
         LOG_ERROR("Cannot allocate node.");
-        exit(EXIT_FAILURE);
+        return NULL;
     }
 
     new_node->data = malloc(strlen(str) + 1);
     if (!new_node->data) {
         LOG_ERROR("Cannot allocate node data for \"%s\".", str);
         free(new_node);
-        exit(EXIT_FAILURE);
+        return NULL;
     }
     strcpy(new_node->data, str);
     new_node->next = NULL;
@@ -37,10 +37,14 @@ Node *list_new_node(const char *str)
 /**
  * Append a new string node to the tail of the list, updating
  * *head / *tail as needed.
+ * Returns 0 on success, -1 on allocation failure.
  */
-void list_append(Node **head, Node **tail, const char *str)
+int list_append(Node **head, Node **tail, const char *str)
 {
     Node *new_node = list_new_node(str);
+    if (!new_node) {
+        return -1;
+    }
 
     if (*head == NULL) {
         *head = new_node;
@@ -51,6 +55,7 @@ void list_append(Node **head, Node **tail, const char *str)
     }
 
     LOG_DEBUG("Appended \"%s\" to list.", str);
+    return 0;
 }
 
 /** Free every node and the string it owns. */

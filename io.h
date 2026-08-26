@@ -16,6 +16,7 @@
 #define IO_H
 
 #include <stddef.h>
+#include <sys/types.h>
 
 #include "list.h"
 
@@ -44,24 +45,33 @@ char *build_output_path(const char *input_path, int ascending);
  * max_length must be strictly less than the internal buffer size
  * (4096).
  *
+ * If input_mode is non-NULL, the input file's permission bits are
+ * captured via fstat(fileno(fp)) while the file is still open
+ * (C-M02 fix: eliminates TOCTOU window).  Falls back to 0600 if
+ * fstat fails.
+ *
  * Returns the number of strings loaded, or -1 on fatal error
  * (e.g. the file could not be opened).
  */
 int load_strings(const char *path, size_t max_length,
-                 Node **head, Node **tail);
+                 Node **head, Node **tail, mode_t *input_mode);
 
 /**
  * Write every string in the list to `path` atomically, one per line.
  *
  * Writes to a temporary file then renames it into place.  The output
- * file's permissions match the input file's (or 0644 if the input
- * cannot be stat'd).  Symlinks at the destination are not followed.
+ * file's permissions are set to `input_mode`.  Symlinks at the
+ * destination are not followed.
+ *
+ * The caller is responsible for capturing the input file's mode
+ * (e.g. via fstat on the open descriptor) and passing it here,
+ * eliminating the TOCTOU window of a pathname-based stat.
  *
  * @param path        The output file path.
- * @param head        The list to write.
- * @param input_path  The original input path (for permission copy).
+ * @param head        The list to write (may be NULL for empty output).
+ * @param input_mode  Permission bits for the output file.
  * @return EXIT_SUCCESS on success, EXIT_FAILURE on fatal error.
  */
-int write_output(const char *path, Node *head, const char *input_path);
+int write_output(const char *path, Node *head, mode_t input_mode);
 
 #endif /* IO_H */

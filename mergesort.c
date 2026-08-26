@@ -22,6 +22,7 @@
 
 #include <pthread.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -48,26 +49,26 @@ typedef struct {
 } MSortJob;
 
 /* Forward declaration (recursive). */
-static void msort(char **src, char **tmp, int lo, int hi,
-                  int ascending, int depth);
+static int msort(char **src, char **tmp, int lo, int hi,
+                 int ascending, int depth);
 
 /* Entry point for a worker thread: sort its job's range, then free. */
 static void *msort_worker(void *arg)
 {
     MSortJob *job = arg;
 
-    msort(job->src, job->tmp, job->lo, job->hi,
-          job->ascending, job->depth);
+    int rc = msort(job->src, job->tmp, job->lo, job->hi,
+                   job->ascending, job->depth);
     free(job);
-    return NULL;
+    return rc == 0 ? NULL : (void *)(intptr_t)-1;
 }
 
 /**
  * Parallel top-down merge sort of src[lo, hi) using tmp as scratch.
  * On return, src[lo, hi) holds the sorted pointers.
  */
-static void msort(char **src, char **tmp, int lo, int hi,
-                  int ascending, int depth)
+static int msort(char **src, char **tmp, int lo, int hi,
+                 int ascending, int depth)
 {
     int n = hi - lo;
 
@@ -86,7 +87,7 @@ static void msort(char **src, char **tmp, int lo, int hi,
             }
             src[j + 1] = key;
         }
-        return;
+        return 0;
     }
 
     int mid = lo + n / 2;
@@ -98,8 +99,10 @@ static void msort(char **src, char **tmp, int lo, int hi,
             /* Out of memory: degrade to fully sequential. */
             LOG_DEBUG("msort: OOM at depth %d, sorting sequentially.",
                       depth);
-            msort(src, tmp, lo, mid, ascending, depth + 1);
-            msort(src, tmp, mid, hi, ascending, depth + 1);
+            if (msort(src, tmp, lo, mid, ascending, depth + 1) != 0)
+                return -1;
+            if (msort(src, tmp, mid, hi, ascending, depth + 1) != 0)
+                return -1;
         } else {
             pthread_t tid;
             job->src       = src;
@@ -110,27 +113,35 @@ static void msort(char **src, char **tmp, int lo, int hi,
             job->depth     = depth + 1;
 
             if (pthread_create(&tid, NULL, msort_worker, job) != 0) {
-                /* Thread creation failed: sort left half inline. */
+                /* Thread creation failed: sort both halves inline. */
                 LOG_DEBUG("msort: pthread_create failed, sorting inline.");
-                msort(src, tmp, lo, mid, ascending, depth + 1);
                 free(job);
+                if (msort(src, tmp, lo, mid, ascending, depth + 1) != 0)
+                    return -1;
+                if (msort(src, tmp, mid, hi, ascending, depth + 1) != 0)
+                    return -1;
             } else {
-                msort(src, tmp, mid, hi, ascending, depth + 1);
-                /* L-01 fix: check pthread_join return value. */
-                int jr = pthread_join(tid, NULL);
+                if (msort(src, tmp, mid, hi, ascending, depth + 1) != 0)
+                    return -1;
+                void *worker_ret = NULL;
+                int jr = pthread_join(tid, &worker_ret);
                 if (jr != 0) {
                     LOG_ERROR("msort: pthread_join failed (err=%d); "
-                              "merge may use unsorted data.", jr);
-                    /* Cannot safely proceed with merge if join failed;
-                     * re-sort left half inline as a fallback. */
-                    msort(src, tmp, lo, mid, ascending, depth + 1);
+                              "aborting sort.", jr);
+                    return -1;
+                }
+                if (worker_ret != NULL) {
+                    LOG_ERROR("msort: worker thread reported failure.");
+                    return -1;
                 }
             }
         }
     } else {
         /* Fork depth cap reached: sort both halves sequentially. */
-        msort(src, tmp, lo, mid, ascending, depth + 1);
-        msort(src, tmp, mid, hi, ascending, depth + 1);
+        if (msort(src, tmp, lo, mid, ascending, depth + 1) != 0)
+            return -1;
+        if (msort(src, tmp, mid, hi, ascending, depth + 1) != 0)
+            return -1;
     }
 
     /* ---- merge src[lo, mid) and src[mid, hi) into tmp, copy back ---- */
@@ -145,6 +156,7 @@ static void msort(char **src, char **tmp, int lo, int hi,
     while (i < mid) tmp[k++] = src[i++];
     while (j < hi)  tmp[k++] = src[j++];
     memcpy(src + lo, tmp + lo, (size_t)(hi - lo) * sizeof *src);
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -156,9 +168,9 @@ static void msort(char **src, char **tmp, int lo, int hi,
  * items holds the sorted pointers on return; tmp must be scratch space
  * for n char* elements that does not alias items.
  */
-void parallel_mergesort(char **items, char **tmp, int n, int ascending)
+int parallel_mergesort(char **items, char **tmp, int n, int ascending)
 {
     if (n <= 0)
-        return;
-    msort(items, tmp, 0, n, ascending, 0);
+        return 0;
+    return msort(items, tmp, 0, n, ascending, 0);
 }
